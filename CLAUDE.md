@@ -98,3 +98,23 @@ It belongs to **ORGAN IV (Orchestration)** under the `organvm-iv-taxis` GitHub o
 
 **Registry:** [`registry-v2.json`](https://github.com/meta-organvm/organvm-corpvs-testamentvm/blob/main/registry-v2.json)
 **Corpus:** [`organvm-corpvs-testamentvm`](https://github.com/meta-organvm/organvm-corpvs-testamentvm)
+
+<!-- ORGANVM:AUTO:START -->
+## System Context (auto-generated — do not edit)
+
+**Organ:** ORGAN-IV (Orchestration) | **Tier:** flagship | **Status:** PUBLIC_PROCESS
+**Org:** `unknown` | **Repo:** `agentic-titan`
+
+### Edges
+- **Produces** → `unknown`: unknown
+- **Produces** → `unknown`: unknown
+- **Consumes** ← `organvm-i-theoria/recursive-engine--generative-entity`: unknown
+
+### Siblings in Orchestration
+`orchestration-start-here`, `petasum-super-petasum`, `universal-node-network`, `.github`, `agent--claude-smith`, `a-i--skills`
+
+### Governance
+- *Standard ORGANVM governance applies*
+
+*Last synced: 2026-02-24T01:01:15Z*
+<!-- ORGANVM:AUTO:END -->

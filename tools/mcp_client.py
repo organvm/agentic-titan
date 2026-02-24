@@ -70,7 +70,7 @@ class MCPToolAdapter(Tool):
         """Call the tool on the remote MCP server."""
         try:
             result = await self._session.call_tool(self.name, arguments=kwargs)
-            
+
             # MCP returns a list of content (TextContent or ImageContent)
             # We concatenate text content for now
             output_text = ""
@@ -80,7 +80,7 @@ class MCPToolAdapter(Tool):
                         output_text += content.text
                     elif content.type == "image":
                         output_text += f"[Image: {content.mimeType}]"
-                        
+
             return ToolResult(success=True, output=output_text)
         except Exception as e:
             logger.error(f"MCP tool {self.name} failed: {e}")
@@ -92,7 +92,9 @@ class MCPClient:
     Manages connection to an MCP server and discovers tools.
     """
 
-    def __init__(self, command: str, args: list[str] | None = None, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, command: str, args: list[str] | None = None, env: dict[str, str] | None = None
+    ) -> None:
         self.params = StdioServerParameters(command=command, args=args or [], env=env)
         self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()

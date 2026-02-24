@@ -37,9 +37,6 @@ consumes:
     description: Depends on organvm-i-theoria/recursive-engine--generative-entity
 
 subscriptions:
-  - event: repo.created
-    source: any
-    action: "Update registry, assign seed.yaml template"
-  - event: ci.passed
-    source: any
-    action: Check if repo qualifies for promotion
+  - event: registry.updated
+    source: META-ORGANVM
+    action: Re-validate dependency graph

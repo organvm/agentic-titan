@@ -8,40 +8,49 @@ Implements the 'Grounding Loop' by bridging abstract inquiry and concrete code.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
-from titan.spec import AgentSpecModel, AgentMetadata, AgentSpecInner, LLMPreference, PersonalitySpec, MemorySpec, RuntimeSpec, ToolSpec
+
+from titan.spec import (
+    AgentMetadata,
+    AgentSpecInner,
+    AgentSpecModel,
+    LLMPreference,
+    MemorySpec,
+    PersonalitySpec,
+    RuntimeSpec,
+    ToolSpec,
+)
 
 logger = logging.getLogger("titan.workflows.spec_generator")
 
 class SpecGenerator:
     """
     Generates Agentic Titan specification files.
-    
+
     Can be used by Meta AI to ground new agent concepts into executable files.
     """
-    
+
     def __init__(self, output_dir: str = "specs"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-    async def generate_from_concept(self, concept: Dict[str, Any]) -> str:
+
+    async def generate_from_concept(self, concept: dict[str, Any]) -> str:
         """
         Generate a .titan.yaml file from a concept dictionary.
-        
+
         Args:
             concept: Dictionary containing agent metadata and specs.
-            
+
         Returns:
             Path to the generated file.
         """
         name = concept.get("name", "unnamed-agent")
         filename = f"{name.lower().replace(' ', '-')}.titan.yaml"
         file_path = self.output_dir / filename
-        
+
         # Build the model
         model = AgentSpecModel(
             apiVersion="titan/v1",
@@ -72,13 +81,13 @@ class SpecGenerator:
                 timeoutMs=concept.get("timeout_ms", 300000)
             )
         )
-        
+
         # Serialize to YAML
         yaml_data = model.model_dump(by_alias=True, exclude_none=True)
-        
+
         with open(file_path, "w") as f:
             yaml.dump(yaml_data, f, sort_keys=False, default_flow_style=False)
-            
+
         logger.info(f"Generated spec file: {file_path}")
         return str(file_path)
 
@@ -90,9 +99,9 @@ class SpecGenerator:
         # In a real implementation, this would call an LLM to parse the inquiry_results
         # and extract the fields for generate_from_concept.
         # For now, we'll implement a heuristic-based extraction or a placeholder.
-        
+
         logger.info(f"Grounding concept '{concept_name}' from session {session_id}")
-        
+
         # Mock extracted concept
         concept = {
             "name": concept_name,
@@ -100,5 +109,5 @@ class SpecGenerator:
             "traits": ["recursive", "analytical"],
             "system_prompt": f"Extracted from inquiry {session_id}: {inquiry_results[:200]}..."
         }
-        
+
         return await self.generate_from_concept(concept)

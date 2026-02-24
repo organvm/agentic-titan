@@ -103,12 +103,12 @@ It belongs to **ORGAN IV (Orchestration)** under the `organvm-iv-taxis` GitHub o
 ## System Context (auto-generated — do not edit)
 
 **Organ:** ORGAN-IV (Orchestration) | **Tier:** flagship | **Status:** PUBLIC_PROCESS
-**Org:** `unknown` | **Repo:** `agentic-titan`
+**Org:** `organvm-iv-taxis` | **Repo:** `agentic-titan`
 
 ### Edges
-- **Produces** → `unknown`: unknown
-- **Produces** → `unknown`: unknown
-- **Consumes** ← `organvm-i-theoria/recursive-engine--generative-entity`: unknown
+- **Produces** → `organvm-iv-taxis/agent--claude-smith`: Agent orchestration framework dependency
+- **Produces** → `organvm-v-logos/public-process`: Public process documentation dependency
+- **Consumes** ← `organvm-i-theoria/recursive-engine--generative-entity`: Recursive engine dependency
 
 ### Siblings in Orchestration
 `orchestration-start-here`, `petasum-super-petasum`, `universal-node-network`, `.github`, `agent--claude-smith`, `a-i--skills`

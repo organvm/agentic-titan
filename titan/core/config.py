@@ -64,7 +64,7 @@ class TitanConfig(BaseSettings):
     # Infrastructure
     redis: RedisConfig = Field(default_factory=RedisConfig)
     chroma_url: str = "http://localhost:8000"
-    
+
     # MCP Integration
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 

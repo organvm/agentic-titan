@@ -8,11 +8,13 @@ event capture and decision tracking.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -54,10 +56,12 @@ class AuditLogger:
         client: PostgresClient | None = None,
         batch_size: int = 10,
         flush_interval_seconds: float = 5.0,
+        local_fallback_path: Path | None = None,
     ) -> None:
         self._client = client or get_postgres_client()
         self._batch_size = batch_size
         self._flush_interval = flush_interval_seconds
+        self._local_fallback_path = local_fallback_path or Path(".titan-audit-fallback.jsonl")
         self._pending_events: list[AuditEvent] = []
         self._pending_decisions: list[AgentDecision] = []
         self._lock = asyncio.Lock()
@@ -99,14 +103,36 @@ class AuditLogger:
             except Exception as e:
                 logger.error(f"Flush loop error: {e}")
 
-    async def _flush(self) -> None:
-        """Flush pending events and decisions to storage."""
-        async with self._lock:
-            if not self._pending_events and not self._pending_decisions:
-                return
+    def _write_local_fallback(self, event: AuditEvent) -> None:
+        """Append an audit event as a JSON line to the local fallback file."""
+        try:
+            with open(self._local_fallback_path, "a") as f:
+                f.write(json.dumps(event.to_dict(), default=str) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to write local fallback: {e}")
 
-            # Flush events
-            for event in self._pending_events:
+    async def drain_local_fallback(self) -> int:
+        """Replay local fallback events to Postgres after DB recovery.
+
+        Returns:
+            Number of events replayed.
+        """
+        if not self._local_fallback_path.exists():
+            return 0
+
+        replayed = 0
+        remaining_lines: list[str] = []
+
+        with open(self._local_fallback_path) as f:
+            lines = f.readlines()
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                event = AuditEvent.from_dict(data)
                 await self._client.insert_audit_event(
                     event_id=event.id,
                     timestamp=event.timestamp,
@@ -120,24 +146,69 @@ class AuditLogger:
                     metadata=event.metadata,
                     checksum=event.checksum,
                 )
+                replayed += 1
+            except Exception as e:
+                logger.warning(f"Failed to replay fallback event: {e}")
+                remaining_lines.append(line + "\n")
 
-            events_flushed = len(self._pending_events)
+        # Rewrite file with only un-replayed lines, or remove if empty
+        if remaining_lines:
+            with open(self._local_fallback_path, "w") as f:
+                f.writelines(remaining_lines)
+        else:
+            self._local_fallback_path.unlink(missing_ok=True)
+
+        logger.info(f"Drained {replayed} events from local fallback")
+        return replayed
+
+    async def _flush(self) -> None:
+        """Flush pending events and decisions to storage."""
+        async with self._lock:
+            if not self._pending_events and not self._pending_decisions:
+                return
+
+            # Flush events
+            events_flushed = 0
+            for event in self._pending_events:
+                try:
+                    await self._client.insert_audit_event(
+                        event_id=event.id,
+                        timestamp=event.timestamp,
+                        event_type=event.event_type.value,
+                        action=event.action,
+                        agent_id=event.agent_id,
+                        session_id=event.session_id,
+                        user_id=event.user_id,
+                        input_data=event.input_data,
+                        output_data=event.output_data,
+                        metadata=event.metadata,
+                        checksum=event.checksum,
+                    )
+                    events_flushed += 1
+                except Exception as e:
+                    logger.warning(f"DB flush failed, writing to local fallback: {e}")
+                    self._write_local_fallback(event)
+
             self._pending_events.clear()
 
             # Flush decisions
+            decisions_flushed = 0
             for decision in self._pending_decisions:
-                await self._client.insert_agent_decision(
-                    decision_id=decision.id,
-                    audit_event_id=decision.audit_event_id,
-                    decision_type=decision.decision_type.value,
-                    rationale=decision.rationale,
-                    selected_option=decision.selected_option,
-                    confidence=decision.confidence,
-                    alternatives=decision.alternatives,
-                    metadata=decision.metadata,
-                )
+                try:
+                    await self._client.insert_agent_decision(
+                        decision_id=decision.id,
+                        audit_event_id=decision.audit_event_id,
+                        decision_type=decision.decision_type.value,
+                        rationale=decision.rationale,
+                        selected_option=decision.selected_option,
+                        confidence=decision.confidence,
+                        alternatives=decision.alternatives,
+                        metadata=decision.metadata,
+                    )
+                    decisions_flushed += 1
+                except Exception as e:
+                    logger.warning(f"DB decision flush failed: {e}")
 
-            decisions_flushed = len(self._pending_decisions)
             self._pending_decisions.clear()
 
             if events_flushed or decisions_flushed:
@@ -387,6 +458,31 @@ class AuditLogger:
                 "responder": responder,
                 "reason": reason,
             },
+        )
+
+    async def log_file_delete_blocked(
+        self,
+        agent_id: str,
+        session_id: str,
+        file_path: str,
+        reason: str,
+        git_tracked: bool,
+    ) -> AuditEvent:
+        """Log a blocked file deletion attempt."""
+        return await self.log_event(
+            event_type=AuditEventType.FILE_DELETE_BLOCKED,
+            action=f"File deletion blocked: {file_path}",
+            agent_id=agent_id,
+            session_id=session_id,
+            input_data={
+                "file_path": file_path,
+                "git_tracked": git_tracked,
+            },
+            output_data={
+                "reason": reason,
+                "blocked": True,
+            },
+            flush=True,
         )
 
     async def log_content_filtered(

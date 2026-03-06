@@ -42,6 +42,11 @@ class AuditEventType(StrEnum):
     PERMISSION_DENIED = "security.permission_denied"
     RATE_LIMIT_HIT = "security.rate_limit"
 
+    # File safety events
+    FILE_DELETE_REQUESTED = "file.delete_requested"
+    FILE_DELETE_BLOCKED = "file.delete_blocked"
+    FILE_ARCHIVED = "file.archived"
+
     # System events
     TOPOLOGY_CHANGED = "system.topology_changed"
     CONFIG_CHANGED = "system.config_changed"
@@ -145,6 +150,7 @@ class DecisionType(StrEnum):
     TASK_DELEGATION = "task_delegation"
     ERROR_RECOVERY = "error_recovery"
     BUDGET_ALLOCATION = "budget_allocation"
+    FILE_SAFETY = "file_safety"
 
 
 class AgentDecision(BaseModel):

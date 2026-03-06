@@ -34,6 +34,7 @@ class ActionCategory(StrEnum):
     NETWORK = "network"
     AUTH = "auth"
     SYSTEM = "system"
+    CLEANUP = "cleanup"
 
 
 @dataclass
@@ -107,6 +108,17 @@ DEFAULT_ACTION_PATTERNS = [
             fallback_action="deny",
             description="Arbitrary code execution",
             categories=[ActionCategory.EXECUTE],
+        ),
+    ),
+    ActionPattern(
+        pattern=r"(clean\s*up|batch\s*(delete|remove)|remove\s+(unused|old|temp)|final\s+clean)",
+        policy=ActionPolicy(
+            risk_level=RiskLevel.CRITICAL,
+            requires_approval=True,
+            timeout_seconds=600,
+            fallback_action="deny",
+            description="Cleanup operation requiring explicit enumeration and approval",
+            categories=[ActionCategory.CLEANUP, ActionCategory.DELETE],
         ),
     ),
     # HIGH - Require approval
@@ -259,20 +271,23 @@ class ActionClassifier:
             ActionPolicy for the action
         """
         # Check patterns in order (more specific first)
+        matched_policy: ActionPolicy | None = None
         for pattern in self._patterns:
             if pattern.matches(action):
                 logger.debug(
                     f"Action '{action[:50]}...' matched pattern '{pattern.pattern}' "
                     f"-> {pattern.policy.risk_level.value}"
                 )
-                return pattern.policy
+                matched_policy = pattern.policy
+                break
+
+        policy = matched_policy or self._default_policy
 
         # Apply context-based adjustments if available
         if context:
-            adjusted = self._adjust_for_context(self._default_policy, context)
-            return adjusted
+            return self._adjust_for_context(policy, context)
 
-        return self._default_policy
+        return policy
 
     def _adjust_for_context(
         self,
@@ -301,6 +316,18 @@ class ActionClassifier:
                     timeout_seconds=policy.timeout_seconds,
                     fallback_action="deny",
                     description=f"{policy.description} (escalated: outside workspace)",
+                    categories=policy.categories,
+                )
+
+        # Escalate deletion of untracked files to CRITICAL
+        if context.get("untracked_files", False):
+            if ActionCategory.DELETE in policy.categories:
+                return ActionPolicy(
+                    risk_level=RiskLevel.CRITICAL,
+                    requires_approval=True,
+                    timeout_seconds=600,
+                    fallback_action="deny",
+                    description=f"{policy.description} (escalated: untracked files)",
                     categories=policy.categories,
                 )
 
@@ -349,7 +376,7 @@ class ActionClassifier:
                 requires_approval=True,
                 timeout_seconds=180,
                 fallback_action="deny",
-                description=f"File deletion: {tool_name}",
+                description=f"File deletion: {tool_name} [ARCHIVE_REQUIRED]",
                 categories=[ActionCategory.DELETE],
             )
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
     from titan.persistence.audit import AuditLogger
 
 logger = logging.getLogger("titan.safety.rbac")
+
+PROTECTED_EXTENSIONS = {
+    ".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte",
+    ".ipynb", ".md", ".rst", ".sql", ".proto", ".graphql",
+}
 
 
 @dataclass
@@ -280,6 +286,15 @@ class RBACEnforcer:
         """
         # Map tool names to required permissions
         tool_permissions = self._get_tool_permissions(tool_name)
+
+        # Protected file extensions require elevated approval for deletion
+        if tool_name == "delete_file":
+            target_path = arguments.get("path", arguments.get("file_path", ""))
+            if isinstance(target_path, str) and target_path:
+                ext = PurePath(target_path).suffix.lower()
+                if ext in PROTECTED_EXTENSIONS:
+                    if Permission.APPROVE_ACTIONS not in tool_permissions:
+                        tool_permissions = [*tool_permissions, Permission.APPROVE_ACTIONS]
 
         return await self.validate_action(
             agent_id=agent_id,

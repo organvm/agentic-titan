@@ -1,0 +1,9 @@
+schema_version: '1.0'
+repo: agentic-titan
+organ: IV
+display_name: 'Polymorphic Agent Swarm Architecture: model-agnostic, self-organizing
+  multi-agent system with 6 topologies, 1,095+ tests (adversarial, chaos, e2e, integration,
+  performance, MCP, Ray), 18 completed phases.'
+delivery:
+- platform: web_app
+  status: not_started

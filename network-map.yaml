@@ -1,0 +1,121 @@
+schema_version: '1.0'
+repo: agentic-titan
+organ: ORGAN-IV
+mirrors:
+  technical:
+  - project: redis/redis-py
+    platform: github
+    relevance: 'Python dependency: redis'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: yaml/pyyaml
+    platform: github
+    relevance: 'Python dependency: pyyaml'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: pydantic/pydantic
+    platform: github
+    relevance: 'Python dependency: pydantic'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: encode/httpx
+    platform: github
+    relevance: 'Python dependency: httpx'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: Textualize/rich
+    platform: github
+    relevance: 'Python dependency: rich'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: pytest-dev/pytest
+    platform: github
+    relevance: 'Python dependency: pytest'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: astral-sh/ruff
+    platform: github
+    relevance: 'Python dependency: ruff'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: tiangolo/fastapi
+    platform: github
+    relevance: 'Python dependency: fastapi'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: encode/uvicorn
+    platform: github
+    relevance: 'Python dependency: uvicorn'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: pallets/jinja
+    platform: github
+    relevance: 'Python dependency: jinja2'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: sqlalchemy/sqlalchemy
+    platform: github
+    relevance: 'Python dependency: sqlalchemy'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: sqlalchemy/alembic
+    platform: github
+    relevance: 'Python dependency: alembic'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: celery/celery
+    platform: github
+    relevance: 'Python dependency: celery'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  - project: aio-libs/aiohttp
+    platform: github
+    relevance: 'Python dependency: aiohttp'
+    engagement:
+    - watch
+    tags:
+    - auto-discovered
+    - python-dep
+  parallel: []
+  kinship: []
+ledger: ~/.organvm/network/ledger.jsonl
+last_scanned: '2026-03-20T11:55:26.338267+00:00'

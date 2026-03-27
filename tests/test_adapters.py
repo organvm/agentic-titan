@@ -1,19 +1,33 @@
-"""Tests for LLM adapters — context window config (F-23) and sensitivity routing (F-24)."""
+"""Tests for LLM adapters — context window config (F-23), sensitivity routing (F-24),
+and Anthropic 413/529 error handling."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from adapters.base import LLMConfig, LLMMessage, LLMProvider, LLMResponse, OllamaAdapter
+from adapters.base import (
+    AnthropicAdapter,
+    LLMConfig,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    OllamaAdapter,
+)
 from adapters.router import (
     CLASSIFICATION_ALLOWED_PROVIDERS,
     DataClassification,
     LLMRouter,
     RoutingStrategy,
 )
-from agents.framework.errors import LLMAdapterError
+from agents.framework.errors import (
+    LLMAdapterError,
+    LLMOverloadedError,
+    LLMRateLimitError,
+    LLMRequestTooLargeError,
+)
 
 # ── F-23: Context window configuration ──
 
@@ -245,3 +259,239 @@ class TestSensitivityRouting:
             )
 
         assert any("AUDIT" in record.message for record in caplog.records)
+
+
+# ── Anthropic 413/529 error handling ──
+
+
+def _make_anthropic_config() -> LLMConfig:
+    """Create a minimal Anthropic adapter config for testing."""
+    return LLMConfig(
+        provider=LLMProvider.ANTHROPIC,
+        model="claude-sonnet-4-20250514",
+        api_key="test-key",  # allow-secret
+    )
+
+
+def _make_httpx_request() -> httpx.Request:
+    """Create a dummy httpx request for exception construction."""
+    return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def _make_httpx_response(status_code: int, headers: dict | None = None) -> httpx.Response:
+    """Create a minimal httpx response for exception construction."""
+    resp = httpx.Response(
+        status_code=status_code,
+        request=_make_httpx_request(),
+        headers=headers or {},
+    )
+    return resp
+
+
+class TestAnthropicErrorTranslation:
+    """Verify _translate_api_error maps Anthropic SDK errors to Titan hierarchy."""
+
+    def test_413_request_too_large_via_typed_exception(self):
+        from anthropic._exceptions import RequestTooLargeError
+
+        response = _make_httpx_response(413)
+        sdk_err = RequestTooLargeError(
+            message="Request too large",
+            response=response,
+            body={"error": {"type": "request_too_large", "message": "Request too large"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMRequestTooLargeError)
+        assert result.code == "LLM_REQUEST_TOO_LARGE"
+        assert result.recoverable is False
+        assert result.provider == "anthropic"
+
+    def test_529_overloaded_via_typed_exception(self):
+        from anthropic._exceptions import OverloadedError
+
+        response = _make_httpx_response(529, headers={"retry-after": "30"})
+        sdk_err = OverloadedError(
+            message="Overloaded",
+            response=response,
+            body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMOverloadedError)
+        assert result.code == "LLM_OVERLOADED"
+        assert result.retry_after == 30
+        assert result.provider == "anthropic"
+
+    def test_529_overloaded_without_retry_after(self):
+        from anthropic._exceptions import OverloadedError
+
+        response = _make_httpx_response(529)
+        sdk_err = OverloadedError(
+            message="Overloaded",
+            response=response,
+            body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMOverloadedError)
+        assert result.retry_after is None
+
+    def test_429_rate_limit(self):
+        from anthropic import RateLimitError
+
+        response = _make_httpx_response(429, headers={"retry-after": "5"})
+        sdk_err = RateLimitError(
+            message="Rate limited",
+            response=response,
+            body={"error": {"type": "rate_limit_error", "message": "Rate limited"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMRateLimitError)
+        assert result.retry_after == 5
+
+    def test_413_via_status_code_fallback(self):
+        """If the SDK sends a generic APIStatusError with status 413, we still catch it."""
+        from anthropic import APIStatusError
+
+        response = _make_httpx_response(413)
+        sdk_err = APIStatusError(
+            message="Request too large",
+            response=response,
+            body={"error": {"type": "request_too_large", "message": "Request too large"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMRequestTooLargeError)
+
+    def test_529_via_status_code_fallback(self):
+        """If the SDK sends a generic APIStatusError with status 529, we still catch it."""
+        from anthropic import APIStatusError
+
+        response = _make_httpx_response(529)
+        sdk_err = APIStatusError(
+            message="Overloaded",
+            response=response,
+            body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMOverloadedError)
+
+    def test_other_api_status_error_becomes_generic(self):
+        from anthropic import APIStatusError
+
+        response = _make_httpx_response(500)
+        sdk_err = APIStatusError(
+            message="Internal server error",
+            response=response,
+            body={"error": {"type": "api_error", "message": "Internal server error"}},
+        )
+
+        result = AnthropicAdapter._translate_api_error(sdk_err)
+        assert isinstance(result, LLMAdapterError)
+        assert "HTTP 500" in str(result)
+
+    def test_non_anthropic_error_passes_through(self):
+        """Non-SDK exceptions are returned as-is (not wrapped)."""
+        original = ValueError("something unrelated")
+        result = AnthropicAdapter._translate_api_error(original)
+        assert result is original
+
+
+class TestAnthropicAdapterErrorHandling:
+    """Verify AnthropicAdapter.complete() and stream() translate errors."""
+
+    @pytest.mark.asyncio
+    async def test_complete_raises_request_too_large(self):
+        from anthropic._exceptions import RequestTooLargeError
+
+        adapter = AnthropicAdapter(_make_anthropic_config())
+        response = _make_httpx_response(413)
+        sdk_err = RequestTooLargeError(
+            message="Request too large",
+            response=response,
+            body={"error": {"type": "request_too_large", "message": "Request too large"}},
+        )
+
+        with patch("anthropic.AsyncAnthropic") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock(side_effect=sdk_err)
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(LLMRequestTooLargeError):
+                await adapter.complete(
+                    [LLMMessage(role="user", content="x" * 1_000_000)],
+                )
+
+    @pytest.mark.asyncio
+    async def test_complete_raises_overloaded(self):
+        from anthropic._exceptions import OverloadedError
+
+        adapter = AnthropicAdapter(_make_anthropic_config())
+        response = _make_httpx_response(529, headers={"retry-after": "10"})
+        sdk_err = OverloadedError(
+            message="Overloaded",
+            response=response,
+            body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+        with patch("anthropic.AsyncAnthropic") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock(side_effect=sdk_err)
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(LLMOverloadedError) as exc_info:
+                await adapter.complete(
+                    [LLMMessage(role="user", content="hello")],
+                )
+            assert exc_info.value.retry_after == 10
+
+    @pytest.mark.asyncio
+    async def test_stream_raises_overloaded(self):
+        from anthropic._exceptions import OverloadedError
+
+        adapter = AnthropicAdapter(_make_anthropic_config())
+        response = _make_httpx_response(529)
+        sdk_err = OverloadedError(
+            message="Overloaded",
+            response=response,
+            body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+        with patch("anthropic.AsyncAnthropic") as mock_cls:
+            mock_client = AsyncMock()
+            # The stream context manager itself raises the error
+            mock_stream_ctx = AsyncMock()
+            mock_stream_ctx.__aenter__ = AsyncMock(side_effect=sdk_err)
+            mock_client.messages.stream = MagicMock(return_value=mock_stream_ctx)
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(LLMOverloadedError):
+                async for _token in adapter.stream(
+                    [LLMMessage(role="user", content="hello")],
+                ):
+                    pass  # pragma: no cover
+
+
+class TestErrorHierarchyProperties:
+    """Verify the new error types have correct recovery and severity metadata."""
+
+    def test_request_too_large_is_non_retryable(self):
+        err = LLMRequestTooLargeError(provider="anthropic", detail="too big")
+        assert err.recoverable is False
+        assert err.recovery.value == "abort"
+        assert err.severity.value == "high"
+        assert "too big" in str(err)
+
+    def test_overloaded_is_retryable(self):
+        err = LLMOverloadedError(provider="anthropic", retry_after=15)
+        assert err.recovery.value == "retry_with_backoff"
+        assert err.retry_after == 15
+        assert err.severity.value == "high"
+
+    def test_overloaded_without_retry_after(self):
+        err = LLMOverloadedError(provider="anthropic")
+        assert err.retry_after is None
+        assert "overloaded" in str(err).lower()

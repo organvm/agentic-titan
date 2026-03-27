@@ -471,6 +471,92 @@ class AnthropicAdapter(LLMAdapter):
 
         return messages, system_content
 
+    @staticmethod
+    def _translate_api_error(e: Exception) -> Exception:
+        """Translate Anthropic SDK exceptions to Titan error hierarchy.
+
+        Maps HTTP status codes to structured, actionable error types:
+        - 413 RequestTooLargeError  -> LLMRequestTooLargeError (non-retryable)
+        - 429 RateLimitError        -> LLMRateLimitError (retryable with backoff)
+        - 529 OverloadedError       -> LLMOverloadedError (retryable with backoff)
+        - Other APIStatusError      -> LLMAdapterError (generic)
+        """
+        from anthropic import (
+            APIStatusError,
+            RateLimitError,
+        )
+
+        # These error types exist in the SDK but may not be re-exported from
+        # the public __init__.py in all versions.  Try the public path first,
+        # then fall back to the private _exceptions module.
+        try:
+            from anthropic import OverloadedError
+        except ImportError:
+            try:
+                from anthropic._exceptions import OverloadedError
+            except ImportError:
+                OverloadedError = None  # type: ignore[assignment, misc]
+
+        try:
+            from anthropic import RequestTooLargeError
+        except ImportError:
+            try:
+                from anthropic._exceptions import RequestTooLargeError
+            except ImportError:
+                RequestTooLargeError = None  # type: ignore[assignment, misc]
+
+        from agents.framework.errors import (
+            LLMAdapterError,
+            LLMOverloadedError,
+            LLMRateLimitError,
+            LLMRequestTooLargeError,
+        )
+
+        provider = "anthropic"
+
+        # 413 — request payload too large (non-retryable)
+        if RequestTooLargeError and isinstance(e, RequestTooLargeError):
+            return LLMRequestTooLargeError(provider=provider, detail=str(e))
+
+        # 529 — server overloaded (retryable)
+        if OverloadedError and isinstance(e, OverloadedError):
+            retry_after = None
+            if hasattr(e, "response") and e.response is not None:
+                raw = e.response.headers.get("retry-after")
+                if raw and raw.isdigit():
+                    retry_after = int(raw)
+            return LLMOverloadedError(provider=provider, retry_after=retry_after)
+
+        # 429 — rate limit (retryable)
+        if isinstance(e, RateLimitError):
+            retry_after = None
+            if hasattr(e, "response") and e.response is not None:
+                raw = e.response.headers.get("retry-after")
+                if raw and raw.isdigit():
+                    retry_after = int(raw)
+            return LLMRateLimitError(provider=provider, retry_after=retry_after)
+
+        # Fallback for status-code errors we also want to catch by code,
+        # in case the SDK maps them to a generic APIStatusError
+        if isinstance(e, APIStatusError):
+            status = e.status_code
+            if status == 413:
+                return LLMRequestTooLargeError(provider=provider, detail=str(e))
+            if status == 529:
+                retry_after = None
+                if hasattr(e, "response") and e.response is not None:
+                    raw = e.response.headers.get("retry-after")
+                    if raw and raw.isdigit():
+                        retry_after = int(raw)
+                return LLMOverloadedError(provider=provider, retry_after=retry_after)
+            return LLMAdapterError(
+                f"Anthropic API error (HTTP {status}): {e}",
+                provider=provider,
+            )
+
+        # Not an Anthropic SDK error — re-raise as-is
+        return e
+
     async def complete(
         self,
         messages: list[LLMMessage],
@@ -480,7 +566,7 @@ class AnthropicAdapter(LLMAdapter):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
-        from anthropic import AsyncAnthropic
+        from anthropic import APIStatusError, AsyncAnthropic
 
         client = AsyncAnthropic(api_key=self.config.api_key)  # allow-secret
 
@@ -517,7 +603,10 @@ class AnthropicAdapter(LLMAdapter):
         if anthropic_tools:
             request_kwargs["tools"] = anthropic_tools
 
-        response = await client.messages.create(**request_kwargs)
+        try:
+            response = await client.messages.create(**request_kwargs)
+        except APIStatusError as e:
+            raise self._translate_api_error(e) from e
 
         # Extract content
         content = ""
@@ -563,7 +652,7 @@ class AnthropicAdapter(LLMAdapter):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
-        from anthropic import AsyncAnthropic
+        from anthropic import APIStatusError, AsyncAnthropic
 
         client = AsyncAnthropic(api_key=self.config.api_key)  # allow-secret
 
@@ -571,15 +660,18 @@ class AnthropicAdapter(LLMAdapter):
         for msg in messages:
             anthropic_messages.append({"role": msg.role, "content": msg.content})
 
-        async with client.messages.stream(
-            model=self.config.model,
-            messages=anthropic_messages,  # type: ignore[arg-type]
-            system=system or "",
-            max_tokens=max_tokens or self.config.max_tokens,
-            temperature=temperature or self.config.temperature,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+        try:
+            async with client.messages.stream(
+                model=self.config.model,
+                messages=anthropic_messages,  # type: ignore[arg-type]
+                system=system or "",
+                max_tokens=max_tokens or self.config.max_tokens,
+                temperature=temperature or self.config.temperature,
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except APIStatusError as e:
+            raise self._translate_api_error(e) from e
 
     async def embed(self, text: str) -> list[float]:
         # Anthropic doesn't have a native embedding API

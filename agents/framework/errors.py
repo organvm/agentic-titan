@@ -247,13 +247,11 @@ class LLMAdapterError(TitanError):
     """Errors related to LLM adapter operations."""
 
     def __init__(self, message: str, *, provider: str | None = None, **kwargs: Any) -> None:
-        super().__init__(
-            message,
-            code="LLM_ADAPTER_ERROR",
-            severity=ErrorSeverity.HIGH,
-            recovery=RecoveryStrategy.RETRY_WITH_BACKOFF,
-            **kwargs,
-        )
+        # Allow subclasses to override code, severity, and recovery via kwargs
+        kwargs.setdefault("code", "LLM_ADAPTER_ERROR")
+        kwargs.setdefault("severity", ErrorSeverity.HIGH)
+        kwargs.setdefault("recovery", RecoveryStrategy.RETRY_WITH_BACKOFF)
+        super().__init__(message, **kwargs)
         self.provider = provider
 
 
@@ -266,6 +264,50 @@ class LLMRateLimitError(LLMAdapterError):
             + (f", retry after {retry_after}s" if retry_after else ""),
             provider=provider,
             code="LLM_RATE_LIMIT",
+            recovery=RecoveryStrategy.RETRY_WITH_BACKOFF,
+            **kwargs,
+        )
+        self.retry_after = retry_after
+
+
+class LLMRequestTooLargeError(LLMAdapterError):
+    """LLM API request payload exceeds size limit (HTTP 413).
+
+    Non-retryable — the request itself is too large. Callers must reduce
+    the payload (e.g. truncate messages, remove tools) before retrying.
+    """
+
+    def __init__(self, provider: str, detail: str = "", **kwargs: Any) -> None:
+        msg = f"Request too large for {provider}"
+        if detail:
+            msg += f": {detail}"
+        super().__init__(
+            msg,
+            provider=provider,
+            code="LLM_REQUEST_TOO_LARGE",
+            severity=ErrorSeverity.HIGH,
+            recovery=RecoveryStrategy.ABORT,
+            recoverable=False,
+            **kwargs,
+        )
+
+
+class LLMOverloadedError(LLMAdapterError):
+    """LLM API server is temporarily overloaded (HTTP 529).
+
+    Retryable with backoff — the server will recover. The retry-after
+    header (if present) should be respected.
+    """
+
+    def __init__(self, provider: str, retry_after: int | None = None, **kwargs: Any) -> None:
+        msg = f"Server overloaded for {provider}"
+        if retry_after:
+            msg += f", retry after {retry_after}s"
+        super().__init__(
+            msg,
+            provider=provider,
+            code="LLM_OVERLOADED",
+            severity=ErrorSeverity.HIGH,
             recovery=RecoveryStrategy.RETRY_WITH_BACKOFF,
             **kwargs,
         )

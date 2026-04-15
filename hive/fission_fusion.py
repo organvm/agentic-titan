@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from titan.metrics import get_metrics
 
 if TYPE_CHECKING:
+    from hive.criticality import CriticalityMonitor
     from hive.events import EventBus
     from hive.neighborhood import TopologicalNeighborhood
     from hive.stigmergy import PheromoneField
@@ -184,6 +185,7 @@ class FissionFusionManager:
         pheromone_field: PheromoneField | None = None,
         event_bus: EventBus | None = None,
         evaluation_interval: float = 30.0,
+        criticality_monitor: CriticalityMonitor | None = None,
     ) -> None:
         """Initialize the fission-fusion manager.
 
@@ -192,11 +194,14 @@ class FissionFusionManager:
             pheromone_field: Pheromone field for stigmergic coordination.
             event_bus: Event bus for publishing events.
             evaluation_interval: Seconds between state evaluations.
+            criticality_monitor: Optional monitor for deriving crisis_level from
+                criticality state (supercritical → high crisis).
         """
         self._neighborhood = neighborhood
         self._pheromone_field = pheromone_field
         self._event_bus = event_bus
         self._evaluation_interval = evaluation_interval
+        self._criticality_monitor = criticality_monitor
 
         self._state = FissionFusionState.FISSION  # Start distributed
         self._metrics = FissionFusionMetrics()
@@ -215,6 +220,9 @@ class FissionFusionManager:
         # Background task
         self._eval_task: asyncio.Task[None] | None = None
         self._running = False
+
+        # Manual crisis override (set via set_crisis_level)
+        self._manual_crisis_level: float | None = None
 
         # Callbacks
         self._on_state_change: list[Callable[[FissionFusionState], None]] = []
@@ -298,8 +306,8 @@ class FissionFusionManager:
         # Calculate cohesion
         cohesion = await self._calculate_cohesion()
 
-        # Crisis and exploration levels (simplified - would be based on external signals)
-        crisis_level = 0.0  # Would be set by external events
+        # Crisis level: manual override > criticality-derived > preserved from last cycle
+        crisis_level = self._resolve_crisis_level()
         exploration_need = 1.0 - task_correlation  # Inverse of correlation
 
         return FissionFusionMetrics(
@@ -352,6 +360,35 @@ class FissionFusionManager:
 
         stats = self._neighborhood.get_network_stats()
         return float(stats.get("average_clustering", 0.5))
+
+    def _resolve_crisis_level(self) -> float:
+        """Resolve crisis_level from available signal sources.
+
+        Priority: manual override > criticality-derived > preserved value.
+        """
+        # 1. Manual override (set via set_crisis_level)
+        if self._manual_crisis_level is not None:
+            return self._manual_crisis_level
+
+        # 2. Derive from criticality monitor if available
+        if self._criticality_monitor is not None:
+            from hive.criticality import CriticalityState
+
+            state = self._criticality_monitor.current_state
+            metrics = self._criticality_monitor.current_metrics
+
+            if state == CriticalityState.SUPERCRITICAL:
+                # Chaotic system → high crisis → push toward FUSION
+                return min(1.0, 0.5 + metrics.criticality_score * 0.5)
+            elif state == CriticalityState.SUBCRITICAL:
+                # Rigid system → low crisis
+                return max(0.0, 0.2 * metrics.criticality_score)
+            else:
+                # Critical (optimal) → moderate baseline
+                return 0.1
+
+        # 3. Preserve current value from last cycle
+        return self._metrics.crisis_level
 
     async def should_transition(self) -> FissionFusionState | None:
         """Determine if state transition should occur.
@@ -595,8 +632,18 @@ class FissionFusionManager:
         return None
 
     def set_crisis_level(self, level: float) -> None:
-        """Set the crisis level (triggers fusion if high)."""
-        self._metrics.crisis_level = max(0.0, min(1.0, level))
+        """Set the crisis level (triggers fusion if high).
+
+        This value persists across evaluation cycles until cleared
+        with clear_crisis_override().
+        """
+        clamped = max(0.0, min(1.0, level))
+        self._manual_crisis_level = clamped
+        self._metrics.crisis_level = clamped
+
+    def clear_crisis_override(self) -> None:
+        """Clear manual crisis override, returning to signal-derived values."""
+        self._manual_crisis_level = None
 
     def set_exploration_need(self, level: float) -> None:
         """Set the exploration need (triggers fission if high)."""

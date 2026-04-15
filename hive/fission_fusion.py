@@ -221,6 +221,10 @@ class FissionFusionManager:
         self._eval_task: asyncio.Task[None] | None = None
         self._running = False
 
+        # Post-transition cooldown (refractory period)
+        self._last_transition_time: datetime | None = None
+        self._cooldown_seconds = evaluation_interval * 2  # Default: 2× eval interval
+
         # Manual crisis override (set via set_crisis_level)
         self._manual_crisis_level: float | None = None
 
@@ -396,6 +400,12 @@ class FissionFusionManager:
         Returns:
             Target state, or None if no transition needed.
         """
+        # Cooldown gate: suppress transitions during refractory period
+        if self._last_transition_time is not None:
+            elapsed = (datetime.now(UTC) - self._last_transition_time).total_seconds()
+            if elapsed < self._cooldown_seconds:
+                return None
+
         if self._state == FissionFusionState.TRANSITIONING:
             # Complete current transition
             return self._metrics.suggest_state()
@@ -432,11 +442,13 @@ class FissionFusionManager:
         # Get all agents
         if not self._neighborhood:
             self._state = FissionFusionState.FISSION
+            self._last_transition_time = datetime.now(UTC)
             return 0
 
         agents = list(self._neighborhood._profiles.keys())
         if not agents:
             self._state = FissionFusionState.FISSION
+            self._last_transition_time = datetime.now(UTC)
             return 0
 
         # Cluster based on task similarity
@@ -479,6 +491,7 @@ class FissionFusionManager:
         metrics.set_cluster_count(clusters_formed)
         metrics.set_fission_fusion_state(FissionFusionState.FISSION.value)
 
+        self._last_transition_time = datetime.now(UTC)
         logger.info(f"Fission completed: {clusters_formed} clusters formed")
 
         # Notify callbacks
@@ -612,6 +625,7 @@ class FissionFusionManager:
         metrics.set_cluster_count(0)
         metrics.set_fission_fusion_state(FissionFusionState.FUSION.value)
 
+        self._last_transition_time = datetime.now(UTC)
         logger.info(f"Fusion completed: info center {self._info_center_id}")
 
         # Notify callbacks

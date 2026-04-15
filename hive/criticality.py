@@ -415,7 +415,10 @@ class CriticalityMonitor:
         # metrics are trivially maximal and cannot detect phase transitions.
         # Use topological neighbor ratio as effective density instead.
         if density > 0.95 and total_agents > 2:
-            neighbor_count = int(stats.get("neighbor_count", total_agents - 1))
+            neighbor_count = min(
+                int(stats.get("neighbor_count", total_agents - 1)),
+                total_agents - 1,  # Clamp k to feasible neighbors in small swarms
+            )
             effective_density = neighbor_count / (total_agents - 1)
             order = effective_density * 0.5 + avg_clustering * 0.5
         else:

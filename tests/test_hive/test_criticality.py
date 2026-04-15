@@ -380,3 +380,22 @@ class TestSwarmDensitySaturation:
         order_k15 = await monitor_k15._measure_order_parameter()
 
         assert order_k3 < order_k15, "Higher k should produce higher order parameter"
+
+    @pytest.mark.asyncio
+    async def test_small_swarm_clamps_k(self):
+        """In small swarms where k > N-1, effective_density stays <= 1.0."""
+        neighborhood = MagicMock()
+        neighborhood.get_network_stats.return_value = {
+            "total_agents": 4,
+            "average_clustering": 1.0,
+            "density": 1.0,
+            "neighbor_count": 7,  # k=7 > N-1=3
+        }
+        neighborhood._profiles = {}
+
+        monitor = CriticalityMonitor(neighborhood=neighborhood)
+        order = await monitor._measure_order_parameter()
+
+        # k clamped to 3, effective_density = 3/3 = 1.0
+        # order = 1.0*0.5 + 1.0*0.5 = 1.0 (but never > 1.0)
+        assert order <= 1.0

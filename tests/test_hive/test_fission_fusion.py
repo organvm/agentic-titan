@@ -337,6 +337,7 @@ class TestFissionFusionManager:
         assert manager._running is False
 
 
+
 class TestCrisisLevelResolution:
     """Tests for crisis_level signal resolution (#70)."""
 
@@ -442,3 +443,64 @@ class TestCrisisLevelResolution:
         manager.clear_crisis_override()
         crisis = manager._resolve_crisis_level()
         assert crisis > 0.5  # Back to supercritical-derived
+
+
+class TestTransitionCooldown:
+    """Tests for post-transition cooldown / refractory period (#68)."""
+
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_immediate_transition(self):
+        """Transition is suppressed during cooldown period."""
+        manager = FissionFusionManager(evaluation_interval=30.0)
+
+        # Perform fission (sets _last_transition_time)
+        await manager.perform_fission()
+
+        # Now set metrics that would normally trigger fusion
+        manager._metrics.task_correlation = 0.9
+        manager._metrics.crisis_level = 0.8
+
+        # Transition should be blocked by cooldown
+        result = await manager.should_transition()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_cooldown_initially(self):
+        """No cooldown before any transition has occurred."""
+        manager = FissionFusionManager()
+        assert manager._last_transition_time is None
+
+        # Set metrics that trigger fusion
+        manager._metrics.task_correlation = 0.9
+        result = await manager.should_transition()
+        assert result == FissionFusionState.FUSION
+
+    @pytest.mark.asyncio
+    async def test_cooldown_default_is_2x_interval(self):
+        """Default cooldown is 2× evaluation_interval."""
+        manager = FissionFusionManager(evaluation_interval=15.0)
+        assert manager._cooldown_seconds == 30.0
+
+    @pytest.mark.asyncio
+    async def test_fusion_also_sets_cooldown(self):
+        """perform_fusion also records transition time."""
+        manager = FissionFusionManager()
+        await manager.perform_fusion()
+        assert manager._last_transition_time is not None
+
+    @pytest.mark.asyncio
+    async def test_cooldown_expires(self):
+        """After cooldown expires, transitions are allowed again."""
+        from datetime import timedelta
+
+        manager = FissionFusionManager(evaluation_interval=1.0)  # 2s cooldown
+
+        await manager.perform_fission()
+
+        # Backdate the transition time to simulate cooldown expiry
+        manager._last_transition_time = manager._last_transition_time - timedelta(seconds=5)
+
+        # Set metrics that trigger fusion
+        manager._metrics.task_correlation = 0.9
+        result = await manager.should_transition()
+        assert result == FissionFusionState.FUSION

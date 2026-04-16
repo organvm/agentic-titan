@@ -72,6 +72,45 @@ class AgentNode:
         }
 
 
+@dataclass(frozen=True)
+class SensingRegion:
+    """Defines the pheromone field region an agent can perceive.
+
+    Replaces deterministic message routing with perceptual gating:
+    topology constrains what an agent can SENSE, not who it can
+    message. Any agent can deposit traces; topology filters perception.
+
+    A None value for locations or trace_types means "unrestricted".
+    """
+
+    locations: frozenset[str] | None = None  # None = full field
+    trace_types: frozenset[str] | None = None  # None = all types
+    min_intensity: float = 0.0
+    max_radius: int | None = None  # Hop-based radius from agent position
+
+    @staticmethod
+    def full_field(min_intensity: float = 0.0) -> SensingRegion:
+        """Full-field sensing — perceive all locations and types."""
+        return SensingRegion(min_intensity=min_intensity)
+
+    @staticmethod
+    def restricted(
+        locations: set[str],
+        min_intensity: float = 0.0,
+    ) -> SensingRegion:
+        """Restricted sensing — perceive only specific locations."""
+        return SensingRegion(
+            locations=frozenset(locations),
+            min_intensity=min_intensity,
+        )
+
+    def contains_location(self, location: str) -> bool:
+        """Check if a location is within this sensing region."""
+        if self.locations is None:
+            return True
+        return location in self.locations
+
+
 @dataclass
 class TaskProfile:
     """Profile of a task used for topology selection."""
@@ -213,6 +252,17 @@ class BaseTopology(ABC):
         """Get the path for routing a message between agents."""
         pass
 
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """Return the pheromone field region this agent can perceive.
+
+        Default: derives from get_message_targets() for backward compat.
+        Subclasses should override for topology-specific sensing geometry.
+        """
+        targets = self.get_message_targets(agent_id)
+        # Agent can sense its own location + all message targets' locations
+        locations = {agent_id} | set(targets)
+        return SensingRegion.restricted(locations)
+
     def get_agent(self, agent_id: str) -> AgentNode | None:
         """Get an agent node."""
         return self.nodes.get(agent_id)
@@ -304,6 +354,10 @@ class SwarmTopology(BaseTopology):
     ) -> list[str]:
         # Direct connection
         return [source_agent_id, target_agent_id]
+
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """SWARM: full-field sensing — perceive everything."""
+        return SensingRegion.full_field()
 
 
 class HierarchyTopology(BaseTopology):
@@ -447,6 +501,17 @@ class HierarchyTopology(BaseTopology):
             current = node.parent_id if node else None
         return path
 
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """HIERARCHY: sense parent + children deposits."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        locations = {agent_id}
+        if node.parent_id:
+            locations.add(node.parent_id)
+        locations.update(node.child_ids)
+        return SensingRegion.restricted(locations)
+
 
 class PipelineTopology(BaseTopology):
     """
@@ -578,6 +643,19 @@ class PipelineTopology(BaseTopology):
 
         return path
 
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """PIPELINE: sense upstream + downstream stage deposits."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        stage = node.metadata.get("stage", 0)
+        locations = {agent_id}
+        # Sense adjacent stages
+        for adj_stage in [stage - 1, stage + 1]:
+            if 0 <= adj_stage < len(self.stages):
+                locations.update(self.stages[adj_stage])
+        return SensingRegion.restricted(locations)
+
 
 class MeshTopology(BaseTopology):
     """
@@ -674,6 +752,15 @@ class MeshTopology(BaseTopology):
                     queue.append((neighbor, path + [neighbor]))
 
         return []
+
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """MESH: sense connected neighbor deposits."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        locations = {agent_id}
+        locations.update(node.neighbors)
+        return SensingRegion.restricted(locations)
 
 
 class RingTopology(BaseTopology):
@@ -780,6 +867,15 @@ class RingTopology(BaseTopology):
         path.append(self.order[target_idx])
 
         return path
+
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """RING: sense adjacent positions only."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        locations = {agent_id}
+        locations.update(node.neighbors)  # Ring neighbors
+        return SensingRegion.restricted(locations)
 
 
 class StarTopology(BaseTopology):
@@ -902,6 +998,19 @@ class StarTopology(BaseTopology):
         else:
             # Spoke to spoke goes through hub
             return [source_agent_id, self.hub_id, target_agent_id] if self.hub_id else []
+
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """STAR: hub senses all; spokes sense only hub deposits."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        if node.role == "hub":
+            return SensingRegion.full_field()
+        # Spokes sense hub + self
+        locations = {agent_id}
+        if self.hub_id:
+            locations.add(self.hub_id)
+        return SensingRegion.restricted(locations)
 
 
 class RhizomaticTopology(BaseTopology):
@@ -1135,6 +1244,17 @@ class FissionFusionTopology(BaseTopology):
             # Path between clusters (direct for now as they share same space)
             return [source_agent_id, target_agent_id]
 
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """FISSION_FUSION: cluster-local sensing (sense own cluster)."""
+        node = self.nodes.get(agent_id)
+        if not node:
+            return SensingRegion.restricted({agent_id})
+        cluster_id = node.metadata.get("cluster_id", "main")
+        members = self.clusters.get(cluster_id, [])
+        locations = {agent_id}
+        locations.update(members)
+        return SensingRegion.restricted(locations)
+
 
 class StigmergicTopology(BaseTopology):
     """
@@ -1191,6 +1311,10 @@ class StigmergicTopology(BaseTopology):
         # Path is through the blackboard (Environment)
         return [source_agent_id, "BLACKBOARD", target_agent_id]
 
+    def get_sensing_region(self, agent_id: str) -> SensingRegion:
+        """STIGMERGIC: full-field sensing (native environment-mediated)."""
+        return SensingRegion.full_field()
+
 
 # ============================================================================
 # Topology Engine
@@ -1220,6 +1344,23 @@ class TopologyEngine:
         TopologyType.RHIZOMATIC: RhizomaticTopology,
         TopologyType.FISSION_FUSION: FissionFusionTopology,
         TopologyType.STIGMERGIC: StigmergicTopology,
+    }
+
+    # Minimum agent count for emergence per topology type.
+    # Below this count, the system is SUBCRITICAL by definition —
+    # not enough agents for collective intelligence to appear.
+    # Values informed by murmuration research (k=7 neighbors for SWARM),
+    # pipeline stages, and hub-spoke minimums.
+    EMERGENCE_THRESHOLDS: dict[TopologyType, int] = {
+        TopologyType.SWARM: 8,           # All-to-all needs critical mass
+        TopologyType.HIERARCHY: 4,       # Leader + 3 workers minimum
+        TopologyType.PIPELINE: 3,        # Minimum meaningful pipeline stages
+        TopologyType.MESH: 6,            # Grid needs NxM with N,M >= 2
+        TopologyType.RING: 4,            # Circular coordination minimum
+        TopologyType.STAR: 4,            # Hub + 3 spokes minimum
+        TopologyType.RHIZOMATIC: 6,      # Lateral connections need density
+        TopologyType.FISSION_FUSION: 6,  # Must form 2+ clusters
+        TopologyType.STIGMERGIC: 5,      # Trace producers + consumers
     }
 
     def __init__(
@@ -1268,6 +1409,36 @@ class TopologyEngine:
         """Check if topology is currently transitioning."""
         return self._transition_lock
 
+    @property
+    def emergence_threshold(self) -> int:
+        """Minimum agent count for emergence in current topology.
+
+        Returns the per-topology threshold. If no topology is active,
+        returns the SWARM threshold (highest, most conservative).
+        """
+        if self._current_topology is None:
+            return self.EMERGENCE_THRESHOLDS[TopologyType.SWARM]
+
+        # Find the topology type for the current topology instance
+        for topo_type, topo_class in self.TOPOLOGY_CLASSES.items():
+            if isinstance(self._current_topology, topo_class):
+                return self.EMERGENCE_THRESHOLDS.get(
+                    topo_type, self.EMERGENCE_THRESHOLDS[TopologyType.SWARM]
+                )
+
+        return self.EMERGENCE_THRESHOLDS[TopologyType.SWARM]
+
+    @property
+    def above_emergence_threshold(self) -> bool:
+        """Whether the current agent count meets the emergence threshold.
+
+        A system below the emergence threshold cannot produce collective
+        intelligence — it is SUBCRITICAL by definition.
+        """
+        if self._current_topology is None:
+            return False
+        return len(self._current_topology.list_agents()) >= self.emergence_threshold
+
     def create_topology(
         self,
         topology_type: TopologyType | str,
@@ -1295,6 +1466,13 @@ class TopologyEngine:
 
         topology = topology_class(**kwargs)
         self._current_topology = topology
+
+        # Push emergence threshold to criticality monitor
+        threshold = self.EMERGENCE_THRESHOLDS.get(
+            topology_type, self.EMERGENCE_THRESHOLDS[TopologyType.SWARM]
+        )
+        agent_count = len(topology.list_agents())
+        self._criticality_monitor.set_emergence_threshold(threshold, agent_count)
 
         logger.info(f"Created {topology_type.value} topology")
         return topology
@@ -1594,6 +1772,8 @@ class TopologyEngine:
         completion_time_ms: float,
         error_rate: float = 0.0,
         user_feedback: float | None = None,
+        collective_output: str | None = None,
+        agent_contributions: dict[str, list[str]] | None = None,
     ) -> None:
         """
         End task tracking and record outcome for learning.
@@ -1603,10 +1783,24 @@ class TopologyEngine:
             completion_time_ms: Time to complete
             error_rate: Error rate during execution
             user_feedback: Optional user feedback (-1 to 1)
+            collective_output: The synthesized collective output, used
+                for emergence detection when paired with agent_contributions.
+            agent_contributions: Per-agent text contributions (agent_id ->
+                list of text outputs). Used for emergence detection.
         """
         # Calculate actual utilization metrics
         utilization = self.get_agent_utilization()
         communication = self.get_communication_overhead()
+
+        # Detect emergence if collective output and contributions provided
+        emergence_detected = False
+        emergence_evidence: list[str] = []
+        if collective_output and agent_contributions:
+            from hive.emergence import EmergenceDetector
+
+            result = EmergenceDetector().detect(agent_contributions, collective_output)
+            emergence_detected = result.detected
+            emergence_evidence = result.evidence
 
         if self._episodic_learner:
             from hive.learning import EpisodeOutcome
@@ -1619,6 +1813,8 @@ class TopologyEngine:
                 topology_switches=len(self._topology_history),
                 error_rate=error_rate,
                 user_feedback=user_feedback,
+                emergence_detected=emergence_detected,
+                emergence_evidence=emergence_evidence,
             )
             self._episodic_learner.end_episode(outcome)
 

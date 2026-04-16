@@ -368,6 +368,53 @@ class PheromoneField:
 
         return result
 
+    async def sense_filtered(
+        self,
+        region: Any,
+    ) -> list[PheromoneTrace]:
+        """Sense traces within a perceptual region.
+
+        Accepts a SensingRegion (from hive.topology) and returns all
+        traces that pass its location, type, and intensity filters.
+        This is the perceptual gating interface: topology constrains
+        what an agent can perceive, not what gets deposited.
+
+        Args:
+            region: A SensingRegion defining the perceptual filter.
+                Uses Any type to avoid circular import with topology.
+
+        Returns:
+            List of traces visible within the sensing region.
+        """
+        result: list[PheromoneTrace] = []
+
+        # Determine which locations to scan
+        if region.locations is None:
+            # Full-field sensing
+            locations_to_scan = list(self._traces.keys())
+        else:
+            locations_to_scan = [
+                loc for loc in region.locations
+                if loc in self._traces
+            ]
+
+        min_intensity = getattr(region, "min_intensity", 0.0)
+        allowed_types = getattr(region, "trace_types", None)
+
+        for location in locations_to_scan:
+            location_traces = self._traces[location]
+            for ttype, traces in location_traces.items():
+                if allowed_types and str(ttype) not in allowed_types:
+                    continue
+                for trace in traces:
+                    if (
+                        not trace.is_expired
+                        and trace.intensity >= min_intensity
+                    ):
+                        result.append(trace)
+
+        return result
+
     async def sense_radius(
         self,
         location: str,

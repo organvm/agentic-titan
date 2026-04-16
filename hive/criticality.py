@@ -171,7 +171,8 @@ class CriticalityMonitor:
         self._event_bus = event_bus
         self._sample_interval = sample_interval
 
-        self._current_state = CriticalityState.CRITICAL  # Assume starting balanced
+        # Assume starting balanced
+        self._current_state: CriticalityState = CriticalityState.CRITICAL
         self._current_metrics = CriticalityMetrics()
         self._metrics_history: list[CriticalityMetrics] = []
         self._transitions: list[PhaseTransition] = []
@@ -185,6 +186,11 @@ class CriticalityMonitor:
         self._running = False
         self._transition_counter = 0
 
+        # Emergence threshold gate — set by TopologyEngine when topology changes.
+        # If agent count is below this, system is SUBCRITICAL by definition.
+        self._emergence_threshold: int | None = None
+        self._current_agent_count: int = 0
+
         # Callbacks for external response
         self._on_transition_callbacks: list[Callable[[PhaseTransition], None]] = []
 
@@ -197,6 +203,26 @@ class CriticalityMonitor:
     def current_metrics(self) -> CriticalityMetrics:
         """Get current criticality metrics."""
         return self._current_metrics
+
+    def set_emergence_threshold(self, threshold: int, agent_count: int) -> None:
+        """Set the emergence threshold and current agent count.
+
+        Called by TopologyEngine when topology changes or agents are added/removed.
+        Below this agent count, the system is forced SUBCRITICAL.
+
+        Args:
+            threshold: Minimum agent count for emergence in current topology.
+            agent_count: Current number of agents.
+        """
+        self._emergence_threshold = threshold
+        self._current_agent_count = agent_count
+
+    @property
+    def below_emergence_threshold(self) -> bool:
+        """Whether the system is below the minimum for collective intelligence."""
+        if self._emergence_threshold is None:
+            return False
+        return self._current_agent_count < self._emergence_threshold
 
     async def start(self) -> None:
         """Start the criticality monitoring loop."""
@@ -238,17 +264,48 @@ class CriticalityMonitor:
         if len(self._metrics_history) > self.HISTORY_SIZE:
             self._metrics_history = self._metrics_history[-self.HISTORY_SIZE :]
 
-        # Check for phase transition
-        new_state = metrics.infer_state()
+        # Gate on emergence threshold: not enough agents = forced SUBCRITICAL
+        if self.below_emergence_threshold:
+            if self._current_state != CriticalityState.SUBCRITICAL:
+                old_state = self._current_state
+                self._current_state = CriticalityState.SUBCRITICAL
+                self._transition_counter += 1
+                transition = PhaseTransition(
+                    transition_id=f"transition_{self._transition_counter}",
+                    from_state=old_state,
+                    to_state=CriticalityState.SUBCRITICAL,
+                    trigger="below_emergence_threshold",
+                    metrics_before=(
+                        self._metrics_history[-2]
+                        if len(self._metrics_history) >= 2
+                        else metrics
+                    ),
+                    metrics_after=metrics,
+                )
+                self._transitions.append(transition)
+                for callback in self._on_transition_callbacks:
+                    try:
+                        callback(transition)
+                    except Exception as e:
+                        logger.error(f"Transition callback error: {e}")
+                logger.info(
+                    "Forced SUBCRITICAL: agent count below emergence threshold"
+                )
+            self._current_metrics = metrics
+            get_metrics().set_criticality_state(self._current_state.value)
+            return
+
+        # Normal phase transition detection
+        new_state: CriticalityState = metrics.infer_state()
         if await self.detect_phase_transition():
-            old_state = self._current_state
+            prev_state = self._current_state
             self._current_state = new_state
 
             # Create transition record
             self._transition_counter += 1
             transition = PhaseTransition(
                 transition_id=f"transition_{self._transition_counter}",
-                from_state=old_state,
+                from_state=prev_state,
                 to_state=new_state,
                 trigger="criticality_evaluation",
                 metrics_before=(
@@ -272,7 +329,7 @@ class CriticalityMonitor:
                 await self._event_bus.emit(
                     EventType.PHASE_TRANSITION_DETECTED,
                     {
-                        "from_state": old_state.value,
+                        "from_state": prev_state.value,
                         "to_state": new_state.value,
                         "metrics": {
                             "correlation_length": metrics.correlation_length,
@@ -284,10 +341,10 @@ class CriticalityMonitor:
                 )
 
             # Record metric
-            get_metrics().phase_transition(old_state.value, new_state.value)
+            get_metrics().phase_transition(prev_state.value, new_state.value)
 
             logger.info(
-                f"Phase transition detected: {old_state.value} -> {new_state.value} "
+                f"Phase transition detected: {prev_state.value} -> {new_state.value} "
                 f"(score={metrics.criticality_score:.2f})"
             )
 

@@ -180,6 +180,20 @@ class PatternExtractor:
                 description="Uses list comprehensions", frequency=list_comp_count,
                 source_files=[str(filepath)]
             ))
+        try:
+            tree = ast.parse(content)
+            annotation_count = sum(
+                1 for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.returns is not None
+            )
+            if annotation_count > 0:
+                patterns.append(CodingPattern(
+                    type=PatternType.TYPING, name="type_annotations",
+                    description="Uses type annotations on functions", frequency=annotation_count,
+                    source_files=[str(filepath)]
+                ))
+        except SyntaxError:
+            pass
         return patterns
 
     def _detect_case(self, name: str) -> str:
@@ -224,7 +238,7 @@ class LocalTrainer:
         source_path = Path(source_path)
         files_analyzed = 0
         for filepath in source_path.rglob("*.py"):
-            if "test" in str(filepath): continue
+            if "test" in filepath.name: continue
             self._extractor.analyze_file(filepath)
             files_analyzed += 1
         self._style_profile = self._extractor.get_style_profile(min_frequency=self.config.min_examples)

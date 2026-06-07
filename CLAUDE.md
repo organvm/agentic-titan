@@ -300,7 +300,7 @@ Scan: `organvm trivium scan IV <OTHER>` | Matrix: `organvm trivium matrix` | Syn
 
 ## Logos Documentation Layer
 
-**Status:** MISSING | **Symmetry:** 0.0 (VACUUM)
+**Status:** ACTIVE | **Symmetry:** 1.0 (ALIGNED)
 
 Nature demands a documentation counterpart. This formation maintains its narrative record in `docs/logos/`.
 
@@ -315,7 +315,7 @@ Nature demands a documentation counterpart. This formation maintains its narrati
 
 - **[Public Essay](https://organvm-v-logos.github.io/public-process/)** — System-wide narrative entry.
 
-*Compliance: Formation is currently void.*
+*Compliance: Record exists and is populated.*
 
 <!-- ORGANVM:AUTO:END -->
 
